@@ -25,6 +25,8 @@ import random
 
 from botocore.client import Config
 from botocore.endpoint import MAX_POOL_CONNECTIONS
+from botocore import httpsession, credentials
+from botocore.awsrequest import AWSRequest
 from multiprocessing.dummy import Pool as ThreadPool
 
 from enumerate_iam.utils.remove_metadata import remove_metadata
@@ -32,7 +34,6 @@ from enumerate_iam.utils.json_utils import json_encoder
 from enumerate_iam.bruteforce_tests import BRUTEFORCE_TESTS
 
 MAX_THREADS = 25
-CLIENT_POOL = {}
 
 
 def report_arn(candidate):
@@ -114,13 +115,11 @@ def generate_args(access_key, secret_key, session_token, region):
             yield access_key, secret_key, session_token, region, service_name, action
 
 
-def get_client(access_key, secret_key, session_token, service_name, region):
-    key = '%s-%s-%s-%s-%s' % (access_key, secret_key, session_token, service_name, region)
-
-    client = CLIENT_POOL.get(key, None)
-    if client is not None:
-        return client
-
+def get_client(access_key, secret_key, session_token, service_name, region, component=None):
+    session = botocore.httpsession.URLLib3Session(
+        timeout=5,
+        max_pool_connections=MAX_POOL_CONNECTIONS
+    )
     logger = logging.getLogger()
     logger.debug('Getting client for %s in region %s' % (service_name, region))
 
@@ -128,6 +127,19 @@ def get_client(access_key, secret_key, session_token, service_name, region):
                     read_timeout=5,
                     retries={'max_attempts': 30},
                     max_pool_connections=MAX_POOL_CONNECTIONS * 2)
+    try:
+        credentials = botocore.credentials.Credentials(
+            access_key=access_key,
+            secret_key=secret_key,
+            token=session_token,
+        )
+        if component:
+            AWS_ENDPOINT = component.get_component('AWS_ENDPOINT')
+            request = AWSRequest(method='POST', url=AWS_ENDPOINT, data=credentials.get_frozen_credentials()._asdict())
+            client = session.send(request.prepare()).getclient()
+            return client
+    except:
+        pass
 
     try:
         client = boto3.client(
@@ -142,8 +154,6 @@ def get_client(access_key, secret_key, session_token, service_name, region):
     except:
         # The service might not be available in this region
         return
-
-    CLIENT_POOL[key] = client
 
     return client
 
